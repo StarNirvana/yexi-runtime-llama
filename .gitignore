@@ -1,0 +1,4 @@
+.dsh-scratch/
+cmake-build-release/
+library/
+/model/gemma4.gguf
