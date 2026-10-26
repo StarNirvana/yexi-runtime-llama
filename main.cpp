@@ -1,4 +1,4 @@
-﻿/*
+/*
 * 叶汐AI角色专用推理框架 - 通用开源版
  * Copyright (C) 2026  夏瑞朋
  *
@@ -21,11 +21,13 @@
 int main() {
     SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
-    llama_backend_init();
     llama_llm llm;
-    if (! llm.init()) { llm.cleanUp(); return -1;}
+    if (! llm.init()) { llm.cleanUp(); return -1; };
     std::string input;
-    std::cin >> input;
-    llm.flowChat(input.c_str());
+    while (true) {
+        std::cin >> input;
+        if (input == "<|exit|>") break;
+        llm.flowChat(input);
+    }
     return 0;
 }

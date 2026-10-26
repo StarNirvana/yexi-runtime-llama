@@ -20,10 +20,23 @@
 #include <ostream>
 #include <random>
 /* -- -- -- -- Private Function -- -- -- -- */
+std::string llama_llm::llm_template() {
+    // 因为项目使用的是gemma4模型，所以这里采用的是手动拼接模板，记得自己改成标准
+    size_t total = 0;
+    for (const auto& [role, content] : conversation) total += role.size() + content.size() + 32;
+    std::string prompt;
+    prompt.reserve(total + 32);
+    for (const auto& [role, content] : conversation) {
+        std::string gemma_role = role;
+        prompt += "<|turn>" + gemma_role + "\n" + content + "<turn|>\n";
+    }
+    prompt += "<|turn>model\n";
+    return prompt;
+}
 /* ** 分词器 ** */
 std::vector<llama_token> llama_llm::participle(const char* prompt) {
-    std::vector<llama_token> prompt_tokens(-llama_tokenize(vocab, prompt, static_cast<int32_t>(strlen(prompt) + 1), nullptr, 0, true, true ));
-    llama_tokenize(vocab, prompt, static_cast<int32_t>(strlen(prompt) + 1), prompt_tokens.data(), static_cast<int32_t>(prompt_tokens.size()), true, true);
+    std::vector<llama_token> prompt_tokens(-llama_tokenize(vocab, prompt, static_cast<int32_t>(strlen(prompt)), nullptr, 0, true, true ));
+    llama_tokenize(vocab, prompt, static_cast<int32_t>(strlen(prompt)), prompt_tokens.data(), static_cast<int32_t>(prompt_tokens.size()), true, true);
     return prompt_tokens;
 }
 
@@ -55,12 +68,14 @@ bool llama_llm::init() {
 }
 
 /* ** 流式对话 ** */
-void llama_llm::flowChat(const char* prompt) {
+void llama_llm::flowChat(std::string prompt) {
+    // prompt 压入会话记录
+    conversation.push_back({"user", prompt});
     // Token 分词处理
-    std::vector<llama_token> tokens = participle(prompt);
+    std::vector<llama_token> tokens = participle(llm_template().c_str());
     // 构建 Batch
-    const llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
     // 首次解码并 Prefill
+    const llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
     if (llama_decode(context, batch) != 0) { std::cerr << "[ ERROR ] >> FlowChat : 解码处理失败"; return; }
     // 自回归生成循环
     std::string content;
@@ -70,12 +85,20 @@ void llama_llm::flowChat(const char* prompt) {
         llama_token new_token_id = llama_sampler_sample(sampler, context, -1);
         // EOG Token 结束
         if (llama_vocab_is_eog(vocab, new_token_id)) break;
+        // 跳过控制类 Token
+        if (llama_vocab_is_control(vocab, new_token_id))continue;
         // 解码
-        char buf[256];
-        if (const int n_chars = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, false); n_chars > 0) std::cout << std::string(buf, n_chars);
+        std::vector<char> piece_buf(4096);
+        if (const int n_chars = llama_token_to_piece(vocab, new_token_id, piece_buf.data(), piece_buf.size(), 0, false); n_chars > 0) {
+            content.append(piece_buf.data(), n_chars);
+            std::cout << std::string(piece_buf.data(), n_chars);
+        }
         // 自回归自增
-        if (llama_decode(context, llama_batch_get_one(&new_token_id, 1)) != 0) { std::cerr << "[ ERROR ] >> FlowChat : 解码处理失败"; return; }
+        const llama_batch regression = llama_batch_get_one(&new_token_id, 1);
+        if (llama_decode(context, regression) != 0) { std::cerr << "[ ERROR ] >> FlowChat : 解码处理失败"; return; }
     }
+    conversation.push_back({"model", content});
+    std::cout << std::endl;
 }
 /* ** 资源清理 ** */
 void llama_llm::cleanUp() {
