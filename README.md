@@ -1,7 +1,7 @@
 # YxAgent
 
-> 叶汐 AI 角色专用推理框架 —— 剥离推理特征后的**多轮推理内核** (v0.2.0-bate)。
-> 一条输入进去，一段文字流出来；历史自己记，模板自己拼，仅此而已。
+> 叶汐 AI 角色专用推理框架 —— 剥离推理特征后的**增量推理内核** (v0.2.1)。
+> 一条输入进去，一段文字流出来；历史留在 KV Cache 里，模板自己拼。
 > 原计划是将agent能力和推理框架深度集成。本仓库会陆续更新相关计划内容
 
 [![C++26](https://img.shields.io/badge/C%2B%2B-26-blue.svg)](#)
@@ -14,42 +14,48 @@
 
 YxAgent 是「叶汐 AI 角色专用推理框架」中被单独剥出来的那一层：**只保留推理本身**。
 
-没有角色设定，没有系统提示词，没有提示工程，也没有任何后处理。程序做的事只有一件 —— 把对话历史拼成一条 prompt 交给 GGUF 模型，然后把模型吐出来的 token 一个一个打印到控制台。
+没有角色设定，没有系统提示词，没有提示工程，也没有任何后处理。程序做的事只有一件 —— 把当前这一轮的输入拼成 prompt 交给 GGUF 模型，然后把模型吐出来的 token 一个一个打印到控制台。
 
-v0.2.0 相比 0.1.0，核心变化是**从"单次问答"升级为"带记忆的会话内核"**：
+**v0.2.1 的核心变化：不再重算历史，改为复用 KV Cache。**
 
-- 新增 `conversation` 会话记录，每轮把 user / model 两侧的话都存下来；
-- 新增 `llm_template()`，按 Gemma 的 turn 格式把整段历史拼成一条 prompt；
-- `main()` 改为循环读输入，可以连续对话，输入 `<|exit|>` 退出。
+上一版（0.2.0）把每轮 `user` / `model` 文本存进 `conversation`，下一轮把整段历史重新拼成 prompt、重新 tokenize、重新 prefill，成本随轮数线性上涨。这一版把 `conversation` 整个删掉，换成一个位置游标 `kv_pos`：
+
+- 每轮**只把新输入** prefill 进上下文，位置从 `kv_pos` 接着写；
+- 模型上一轮的输出早就躺在 KV Cache 里，不需要重新喂；
+- 生成的每个 token 也按 `kv_pos` 逐位写入，游标随之递增。
+
+于是"记忆"从**文本层**下沉到了**缓存层**：没有历史字符串，只有一段一直在长的 K/V。
 
 适合用来：
 
 - 作为角色框架的**最小会话底座**，往上叠人格、长期记忆、对话管理；
 - 验证 GGUF 模型能否正常加载 / 跑通多轮对话（最小可复现样例）；
-- 学习 llama.cpp C API 的完整调用链（加载 → 分词 → prefill → 采样 → 流式输出 → 释放）。
+- 学习 llama.cpp C API 的完整调用链（加载 → 分词 → 手工 batch → prefill → 采样 → 流式输出 → 释放）。
 
-整个内核由 3 个源文件组成，约 197 行（含 GPL 版权头），不依赖 server、不依赖 Python、不依赖任何胶水层。
+整个内核由 3 个源文件组成，约 210 行（含 GPL 版权头），不依赖 server、不依赖 Python、不依赖任何胶水层。
 
-## 版本变更（0.1.0 → 0.2.0）
+## 版本变更
 
-| 项目 | 0.1.0 | 0.2.0 |
-| --- | --- | --- |
-| 交互 | 读一次输入、答一轮就结束 | `while` 循环，可连续多轮，`<|exit|>` 退出 |
-| 记忆 | 无 | `conversation` 保存 user / model 全部轮次（仅进程内） |
-| 模板 | 裸 prompt 直接喂 | `llm_template()` 手搓 Gemma turn 格式 |
-| KV cache | 不用 | **仍然不用**：每轮把全部历史重新 tokenize + prefill |
-| 清理 | 成功路径不清理 | 同左（`main` 直接 `return 0`，`cleanUp()` 不会执行） |
+| 项目 | 0.1.0 | 0.2.0                           | 0.2.1                                          |
+| --- | --- |---------------------------------|------------------------------------------------|
+| 交互 | 读一次输入、答一轮就结束 | `while` 循环，可连续多轮，`<\|exit\|>`退出 | 同左                                             |
+| 记忆载体 | 无 | `conversation` 文本记录             | **KV Cache + `kv_pos` 游标**                     |
+| 每轮 prefill | 单条 prompt | 全部历史重算                          | **仅新增 token**                                  |
+| Batch 构造 | `llama_batch_get_one` | 同左                              | **`llama_batch_init` + 手写 `pos` / `seq_id` / `logits`** |
+| 上下文成本 | — | 随轮数线性增长，总成本 O(n²)               | 每轮 O(新增)，累计 O(n)                               |
+| 会话文本 | 无 | 完整保留                            | 利用 KV Cache 保存 (单会话)                           |
+| 清理 | 成功路径不清理 | 同左（`main` 直接 `return 0`）        | 成功路径在结束时清理   |
 
-一句话总结：**记忆有了，但代价是每轮重算全部历史**。
+一句话总结：**快了，也"忘"得更彻底 —— 历史只剩在缓存里，进程一退就真没了。**
 
 ## 包含与不包含
 
 | 本程序包含 | 本程序不包含 |
 | --- | --- |
 | GGUF 模型加载（默认全层卸载到 GPU） | 角色人设 / 系统提示词 |
-| 多轮会话记录（`conversation`，进程内有效） | 历史持久化（退出即丢，无落盘） |
-| Gemma turn 模板拼接（`llm_template()` 手工实现） | 通用 chat template（未调用 `llama_chat_apply_template`） |
-| 分词 → prefill → 自回归采样 | KV cache 复用 / 上下文滑动（每轮全量重算） |
+| KV Cache 增量复用（`kv_pos` 游标，只 prefill 新增 token） | 上下文腾挪（无滑动窗口、无 KV shift、无摘要） |
+| 手工 batch 构造（逐 token 写 `pos` / `seq_id` / `logits`） | 通用 chat template（未调用 `llama_chat_apply_template`） |
+| 分词 → prefill → 自回归采样 | 会话文本记录 / 历史持久化（退出即丢，无落盘） |
 | top-k / top-p / temperature / 重复惩罚采样链 | 推理链（CoT）、工具调用、RAG、输出后处理 |
 | 逐 token 流式打印 | 命令行参数、配置文件、日志系统 |
 | Windows 控制台 UTF-8 修正 | 跨平台支持 |
@@ -57,7 +63,9 @@ v0.2.0 相比 0.1.0，核心变化是**从"单次问答"升级为"带记忆的�
 ## 特性
 
 - **极简**：`main.cpp` + `llama_llm.h/.cpp`，一个类、三个公开方法（`init` / `flowChat` / `cleanUp`）。
-- **多轮记忆**：`conversation` 以 `{role, prompt}` 形式记录每一轮，下一轮自动带上。
+- **增量 prefill**：只把这一轮的新输入写进上下文，历史交给 KV Cache，不再整段重算。
+- **显式位置控制**：`pos` 由 `kv_pos` 统一分配，prefill 与逐 token 生成共用同一个游标。
+- **省显存的 logits**：整段 prefill 只对最后一个位置开 `logits`，其余置 `false`。
 - **直接调 C API**：直接使用 llama.cpp 的 `llama_model`、`llama_context`、`llama_sampler`，不经过 `common` 封装。
 - **流式输出**：每采到一个 token 立即 `std::cout`，无缓冲拼接。
 - **GPU 优先**：`n_gpu_layers = -1` 全量卸载；无可用 GPU 时 llama.cpp 自动回落到 CPU。
@@ -77,16 +85,24 @@ main()
  └─ while (std::cin >> input)                                // 多轮循环
       ├─ input == "<|exit|>" ? break
       └─ llama_llm::flowChat(input)
-           ├─ conversation.push_back({"user", input})
-           ├─ llm_template()      整段历史拼成 Gemma turn 串
-           │     <|turn>user\n…<turn|>\n<|turn>model\n…
-           ├─ participle()        分词（两段式：先问长度，再填 buffer）
-           ├─ llama_decode()      prefill —— 全部历史，每轮重来一次
-           ├─ 最多 512 次循环：sample → 判 EOG → 跳控制符 → token_to_piece → cout → decode
-           └─ conversation.push_back({"model", content})
+           ├─ llm_template(input)   拼接本轮 prompt（见下方"注意"）
+           ├─ participle()          分词（两段式：先问长度，再填 buffer）
+           ├─ llama_batch_init(n_tokens, 0, 1)
+           │     token[i] = tokens[i]
+           │     pos[i]   = kv_pos + i          // 接在历史后面
+           │     seq_id[i][0] = 0, n_seq_id[i] = 1
+           │     logits[i] = false（仅末位 true）
+           ├─ llama_decode()        prefill —— 只算新增的一轮
+           ├─ kv_pos += n_tokens
+           ├─ 最多 512 次循环：
+           │     sample → 判 EOG → 写入单 token batch（pos = kv_pos）→ decode → kv_pos++
+           │     → 跳控制符 → token_to_piece → cout
+           └─ llama_batch_free()
 ```
 
-注意 `llm_template()` 末尾固定补一个 `<|turn>model\n`，把"该模型发言"的开口留给采样器；历史里则用 `<|turn>…<turn|>` 成对包裹。
+`kv_pos` 是唯一的位置来源：prefill 用它铺 `pos`，生成阶段每解码一个 token 就 `+1`，因此下一轮的 prefill 天然接在旧历史之后。
+
+> ⚠ **注意**：`llm_template()` 目前的实现是 `prompt.append("<|turn>\nuser").append(prompt).append("<turn|>\n<|turn>model\n")`，也就是对形参自身做 append —— 用户输入会出现两次，且 `<|turn>` 落在输入之后，并不是合法的 Gemma turn 格式。详见[已知限制](#已知限制--todo)第 1 条。
 
 进程退出时不显式释放（`main` 直接 `return 0`）；初始化失败路径才会调用 `cleanUp()`。
 
@@ -95,8 +111,8 @@ main()
 ```text
 YxAgent/
 ├── main.cpp                    # 入口：UTF-8 控制台、初始化、多轮输入循环、<|exit|> 退出
-├── include/llama_llm.h         # llama_llm 声明：模型 / 上下文 / 采样器 / 词表 / 会话记录
-├── src/llama_llm.cpp           # 模板拼接、分词、模型加载、采样链、流式生成、资源释放
+├── include/llama_llm.h         # llama_llm 声明：模型 / 上下文 / 采样器 / 词表 / kv_pos 游标
+├── src/llama_llm.cpp           # 模板拼接、分词、模型加载、采样链、手写 batch、流式生成
 ├── model/gemma4.gguf           # 模型权重（约 9.2 GB，不随仓库提供）
 ├── library/llama.cpp-b11526/   # 内置 llama.cpp 源码（不纳入版本库，构建前需就位）
 ├── LICENSE.md                  # GNU GPL v3
@@ -148,7 +164,7 @@ cd <仓库根目录>            # 必须在根目录运行，模型路径是相�
 ```
 
 - 输入 `<|exit|>` 结束程序（判等是精确匹配，前后不能有空格）。
-- 历史只存在内存里，进程退出即丢；重开就是全新会话。
+- 历史只活在 KV Cache 与 `kv_pos` 里，进程退出即丢；重开就是全新会话。
 - 注意 `main.cpp` 使用的是 `std::cin >> input`，**只读取第一个空白分隔的词**，带空格的句子会被截断。
 
 ## 关键参数
@@ -157,42 +173,44 @@ cd <仓库根目录>            # 必须在根目录运行，模型路径是相�
 
 | 位置 | 参数 | 当前值 | 说明 |
 | --- | --- | --- | --- |
-| `src/llama_llm.cpp:49` | 模型路径 | `./model/gemma4.gguf` | 相对当前工作目录 |
-| `src/llama_llm.cpp:47` | `n_gpu_layers` | `-1` | 全部层卸载到 GPU |
-| `src/llama_llm.cpp:54` | `n_threads` | `6` | 单 token 生成线程数 |
-| `src/llama_llm.cpp:57` | `n_threads_batch` | `14` | prefill 批处理线程数 |
-| `src/llama_llm.cpp:55` | `n_batch` | `2048` | 单次 decode 的最大批大小 |
-| `src/llama_llm.cpp:56` | `n_ctx` | `4096` | 上下文窗口（2048 × 2），**多轮共享** |
-| `src/llama_llm.cpp:62` | 重复惩罚 | `1.1`（窗口 64） | penalties 采样器，跨轮累积 |
-| `src/llama_llm.cpp:63` | `top_k` | `60` | — |
-| `src/llama_llm.cpp:64` | `top_p` | `1.0` | 等于关闭核采样 |
-| `src/llama_llm.cpp:65` | `temperature` | `0.7` | — |
-| `src/llama_llm.cpp:82` | `MAX_TOKENS` | `512` | 单轮输出上限 |
-| `src/llama_llm.cpp:31` | turn 标记 | `<|turn>` / `<turn|>` | 与 Gemma 模板绑定，换模型必须改 |
+| `src/llama_llm.cpp:41` | 模型路径 | `./model/gemma4.gguf` | 相对当前工作目录 |
+| `src/llama_llm.cpp:39` | `n_gpu_layers` | `-1` | 全部层卸载到 GPU |
+| `src/llama_llm.cpp:46` | `n_threads` | `6` | 单 token 生成线程数 |
+| `src/llama_llm.cpp:49` | `n_threads_batch` | `14` | prefill 批处理线程数 |
+| `src/llama_llm.cpp:47` | `n_batch` | `2048` | 单次 decode 的最大批大小 |
+| `src/llama_llm.cpp:48` | `n_ctx` | `4096` | 上下文窗口（2048 × 2），**所有轮次共享的总预算** |
+| `src/llama_llm.cpp:54` | 重复惩罚 | `1.1`（窗口 64） | penalties 采样器，跨轮累积 |
+| `src/llama_llm.cpp:55` | `top_k` | `60` | — |
+| `src/llama_llm.cpp:56` | `top_p` | `1.0` | 等于关闭核采样 |
+| `src/llama_llm.cpp:57` | `temperature` | `0.7` | — |
+| `src/llama_llm.cpp:85` | `MAX_TOKENS` | `512` | 单轮输出上限 |
+| `src/llama_llm.cpp:25` | turn 标记 | `<|turn>` / `<turn|>` | 与 Gemma 模板绑定，换模型必须改 |
+| `include/llama_llm.h:37` | `kv_pos` | `0`（起始） | KV Cache 写指针，只增不减，不会回退 |
 
 ## 已知限制 / TODO
-
-1. **每轮全量重算**：`flowChat()` 每次都把整段历史重新 tokenize + prefill，不做 KV cache 复用（没有 `context_past`、没有 `llama_batch` 的 pos 推进）。第 n 轮的 prefill 成本随历史线性增长，总成本约 O(n²)，长会话会明显变卡。
-2. **上下文不会自己腾地方**：`n_ctx` 固定 4096，历史填满后 `llama_decode()` 返回非 0，函数直接 `return`。此时这一轮的 user 消息**已经压进 `conversation`**，下一轮只会更长、更必然失败 —— 会话实际上被卡死，只能重启。
+1. **上下文只增不减**：`kv_pos` 单调递增，`n_ctx = 4096` 是**所有轮次 prompt + 生成**的总预算。写满后 `llama_decode()` 返回非 0，函数直接 `return`，且 `kv_pos` 不推进、不重置 —— 此后每一轮都会失败，只能重启进程。没有滑动窗口、没有 `llama_kv_self_seq_rm` 之类的腾挪。
+2. **历史没有文本副本**：`conversation` 已删除，`flowChat()` 里的 `content` 仍在收集字符串却从未被使用。想落盘、摘要压缩、重建会话，都得先把文本记录加回来。
 3. **输入截断**：`std::cin >> input` 遇空白即停，带空格的中文/英文句子会被切碎，应改为 `std::getline` 读整行。
 4. **EOF 未检查**：`std::cin >> input` 失败（如 Ctrl+Z / 重定向读完）后循环不会退出，`input` 为空串却继续调用 `flowChat("")`，会空转。
-5. **模板是手搓的**：`llm_template()` 硬编码 Gemma 的 `<|turn>` 格式，换模型要改这里；正确做法是读 GGUF 的 `tokenizer.chat_template` 走 `llama_chat_apply_template`。
-6. **长度写死**：`n_ctx` 4096、`MAX_TOKENS` 512。
-7. **不可配置**：模型路径、线程数、采样参数、退出词均为编译期常量，无命令行开关。
-8. **成功路径不清理**：`main` 走完直接 `return 0`，`cleanUp()` 与 `llama_backend_free()` 都不会执行，靠进程退出回收。
-9. **采样器状态跨轮累积**：penalties 采样器会在 `accept` 时记录历史 token，多轮之后重复词惩罚覆盖的是很久以前的输出，可能影响用词。
-10. **仅 Windows**：`SetConsoleCP` 等调用把平台锁死在 Windows。
+5. **控制符也进 KV**：判定为 control 的 token 只跳过打印，`llama_decode()` 仍会把它写进上下文并占用一个位置。
+6. **模板是手搓的**：硬编码 Gemma 的 `<|turn>` 格式，换模型要改 `llm_template()`；正确做法是读 GGUF 的 `tokenizer.chat_template` 走 `llama_chat_apply_template`。
+7. **长度写死**：`n_ctx` 4096、`MAX_TOKENS` 512。
+8. **不可配置**：模型路径、线程数、采样参数、退出词均为编译期常量，无命令行开关。
+9. **成功路径不清理**：`main` 走完直接 `return 0`，`cleanUp()` 与 `llama_backend_free()` 都不会执行，靠进程退出回收。
+10. **采样器状态跨轮累积**：penalties 采样器会在 `accept` 时记录历史 token，多轮之后重复词惩罚覆盖的是很久以前的输出，可能影响用词。
+11. **仅 Windows**：`SetConsoleCP` 等调用把平台锁死在 Windows。
+12. **残留调试注释**：`src/llama_llm.cpp` 末尾留着两条试机用的 prompt 注释（"记住口令 lyx" / "请复述口令"），提交前建议清掉。
 
 ## 从内核到角色框架
 
 单次推理只是地基，往上叠的顺序大致是：
 
-1. ~~**chat template**~~：已用手搓 `llm_template()` 顶上，下一步换成 `llama_chat_apply_template`，让模板跟着模型走；
-2. **KV cache 复用**：只 decode 新增的那一段，用 `llama_batch.pos` 接续历史，让 `n_past` 递增而不是每轮重算；
-3. **上下文管理**：`n_ctx` 快满时做滑动窗口或摘要压缩，并在 prefill 失败时回滚 `conversation`；
+1. **修模板**：把 `llm_template()` 的自我 append 改对，最好换成 `llama_chat_apply_template`，让模板跟着模型走；
+2. **上下文管理**：`kv_pos` 逼近 `n_ctx` 时用 `seq_rm` 丢掉最早的轮次（保留首轮），或做摘要压缩，并在 prefill 失败时回滚游标；
+3. **恢复文本记录**：重新保留一份 `conversation`（或至少存 user 侧原文），为落盘、摘要、UI 展示留数据源；
 4. **参数化**：模型路径、采样参数、输出上限、退出词走命令行或配置文件；
 5. **回调式输出**：把 `std::cout` 换成 token 回调，便于接 GUI / TTS / 流式协议；
-6. **持久化会话**：`conversation` 落盘，支持跨进程续聊；
+6. **持久化会话**：文本记录 + KV 落盘，支持跨进程续聊；
 7. **角色层**：最后再叠人设、长期记忆与工具 —— 那才是"叶汐"的部分，不在本仓库范围内。
 
 ## 许可

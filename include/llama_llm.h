@@ -33,12 +33,11 @@ class llama_llm {
     llama_sampler_chain_params sampler_params = llama_sampler_chain_default_params();
     // Token 词表
     const llama_vocab* vocab = nullptr;
-    // 会话记录
-    struct llm_message { std::string role; std::string prompt; };
-    std::vector<llm_message> conversation;
+    // KV Cache 位置
+    llama_pos kv_pos = 0;
     /* -- -- -- Private function -- -- -- */
     // 指令模板
-    std::string llm_template();
+    std::string llm_template(const std::string& prompt);
     // 分词器
     std::vector<llama_token> participle(const char* prompt);
 public:
@@ -49,7 +48,7 @@ public:
     // 初始化设置
     bool init();
     // 流式对话
-    void flowChat(std::string prompt);
+    void flowChat(const std::string& prompt);
     void cleanUp();
 #endif //YXAGENT_LLAMA_LLM_H
 };

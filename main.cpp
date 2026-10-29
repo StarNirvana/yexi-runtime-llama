@@ -29,5 +29,6 @@ int main() {
         if (input == "<|exit|>") break;
         llm.flowChat(input);
     }
+    llm.cleanUp();
     return 0;
 }
