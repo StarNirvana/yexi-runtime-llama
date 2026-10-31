@@ -25,8 +25,8 @@ int main() {
     if (! llm.init()) { llm.cleanUp(); return -1; };
     std::string input;
     while (true) {
-        std::cin >> input;
-        if (input == "<|exit|>") break;
+        std::getline(std::cin, input);
+        if (input == "#|exit") break;
         llm.flowChat(input);
     }
     llm.cleanUp();

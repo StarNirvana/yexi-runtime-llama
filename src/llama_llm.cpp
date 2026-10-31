@@ -19,11 +19,26 @@
 #include <iostream>
 #include <ostream>
 #include <random>
+/* -- -- -- -- Assistance Function -- -- -- -- */
+std::string gemma4_template(const std::string_view prompt) {
+    std::string turn;
+    turn.reserve(21 + prompt.size());
+    return turn.append("<|turn>user\n").append(prompt).append("<turn|>\n<|turn>model\n");
+}
 /* -- -- -- -- Private Function -- -- -- -- */
 std::string llama_llm::llm_template(const std::string& prompt) {
-    // 因为项目使用的是gemma4模型，所以这里采用的是手动拼接模板，记得自己改成标准
-    std::string turn = "<|turn>\nuser";
-    return turn.append(prompt).append("<turn|>\n<|turn>model\n");;
+    // 检查是否为 Google/Gemma 4 模型
+    char check[64] = {0};
+    llama_model_meta_val_str(model, "general.architecture", check, sizeof(check));
+    if (std::strcmp(check, "gemma4") == 0) return gemma4_template(prompt);
+    const char* tmpl = llama_model_chat_template(model, nullptr);
+    if (!tmpl) { std::cerr << "[ ERROR ] >> llm_template : 未内嵌 chat template\n"; return {}; }
+    const llama_chat_message msg { "user", prompt.c_str() };
+    const int32_t needed = llama_chat_apply_template(tmpl, &msg, 1, true, nullptr, 0);
+    if (needed == -1) { std::cerr << "[ ERROR ] >> llm_template : template 使用失败\n"; return {}; }
+    std::vector<char> buf(static_cast<size_t>(needed));
+    const int32_t written = llama_chat_apply_template(tmpl, &msg, 1, true, buf.data(), needed);
+    return std::string(buf.data(), written > 0 ? written : 0);
 }
 /* ** 分词器 ** */
 std::vector<llama_token> llama_llm::participle(const char* prompt) {
@@ -62,7 +77,7 @@ bool llama_llm::init() {
 /* ** 流式对话 ** */
 void llama_llm::flowChat(const std::string& prompt) {
     // Token 分词处理
-    std::vector<llama_token> tokens = participle(llm_template(prompt).c_str());
+    const std::vector<llama_token> tokens = participle(llm_template(prompt).c_str());
     // 构建 Batch
     llama_batch batch = llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1);
     batch.n_tokens = static_cast<int32_t>(tokens.size());
@@ -86,7 +101,7 @@ void llama_llm::flowChat(const std::string& prompt) {
     llama_batch reg = llama_batch_init(1, 0, 1);
     for (int index = 0; index < MAX_TOKENS; ++index) {
         // 采集生成
-        llama_token new_token_id = llama_sampler_sample(sampler, context, -1);
+        const llama_token new_token_id = llama_sampler_sample(sampler, context, -1);
         // EOG Token 结束
         if (llama_vocab_is_eog(vocab, new_token_id)) break;
 
@@ -120,5 +135,3 @@ void llama_llm::cleanUp() {
     vocab = nullptr;
     llama_backend_free();
 }
-// 你好Gemma4，现在请在这一轮记住口令“lyx”
-// 请复述口令
