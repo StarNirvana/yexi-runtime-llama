@@ -49,7 +49,7 @@ std::vector<llama_token> llama_llm::participle(const char* prompt) {
 
 /* -- -- -- -- Public Function -- -- -- -- */
 /* ** 初始化 ** */
-bool llama_llm::init() {
+bool llama_llm::init(const SpscQueue& spsc_queue_) {
     // 模型权重卸载层数
     model_params.n_gpu_layers = -1;
     // 加载 GGUF 模型
@@ -71,6 +71,7 @@ bool llama_llm::init() {
     llama_sampler_chain_add(sampler, llama_sampler_init_top_p(1.0f, 1));
     llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
     llama_sampler_chain_add(sampler, llama_sampler_init_dist(std::random_device{}()));
+    this -> spsc_queue = spsc_queue_;
     return true;
 }
 
@@ -121,11 +122,11 @@ void llama_llm::flowChat(const std::string& prompt) {
         std::vector<char> piece_buf(4096);
         if (const int n_chars = llama_token_to_piece(vocab, new_token_id, piece_buf.data(), static_cast<int32_t>(piece_buf.size()), 0, false); n_chars > 0) {
             content.append(piece_buf.data(), n_chars);
-            std::cout << std::string(piece_buf.data(), n_chars);
+            spsc_queue.enter(std::string(piece_buf.data(), n_chars));
         }
     }
     llama_batch_free(reg);
-    std::cout << std::endl;
+    spsc_queue.uStatus(false);
 }
 /* ** 资源清理 ** */
 void llama_llm::cleanUp() {

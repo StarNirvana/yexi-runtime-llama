@@ -15,6 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+#include <future>
 #include <iostream>
 #include <windows.h>
 #include "include/llama_llm.h"
@@ -22,12 +23,21 @@ int main() {
     SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
     llama_llm llm;
-    if (! llm.init()) { llm.cleanUp(); return -1; };
+    SpscQueue spsc_queue;
+    if (! llm.init(spsc_queue)) { llm.cleanUp(); return -1; };
     std::string input;
     while (true) {
         std::getline(std::cin, input);
         if (input == "#|exit") break;
-        llm.flowChat(input);
+        // 异步任务
+        std::thread t(&llama_llm::flowChat, &llm, input);
+        t.detach();
+        std::string value;
+        while (spsc_queue.check()) {
+            std::cout << spsc_queue.take();
+        }
+        spsc_queue.uStatus(true);
+        std::cout << std::endl;
     }
     llm.cleanUp();
     return 0;

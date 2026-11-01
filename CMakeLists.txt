@@ -20,6 +20,8 @@ add_subdirectory(library/llama.cpp-b12000)
 add_executable(YxAgent main.cpp
         src/llama_llm.cpp
         include/llama_llm.h
+        include/SpscQueue.h
+        src/SpscQueue.cpp
 )
 target_link_libraries(YxAgent PRIVATE llama)
 # 回退旧行为

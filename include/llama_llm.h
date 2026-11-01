@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include <llama.h>
+#include "./SpscQueue.h"
 class llama_llm {
     /* -- -- -- Params and Pointer -- -- -- */
     // GGUF 模型
@@ -35,6 +36,8 @@ class llama_llm {
     const llama_vocab* vocab = nullptr;
     // KV Cache 位置
     llama_pos kv_pos = 0;
+    // 队列
+    SpscQueue spsc_queue;
     /* -- -- -- Private function -- -- -- */
     // 指令模板
     std::string llm_template(const std::string& prompt);
@@ -46,7 +49,7 @@ public:
     llama_llm(const llama_llm&) = delete;
     llama_llm& operator=(const llama_llm&) = delete;
     // 初始化设置
-    bool init();
+    bool init(const SpscQueue& spsc_queue_);
     // 流式对话
     void flowChat(const std::string& prompt);
     void cleanUp();
