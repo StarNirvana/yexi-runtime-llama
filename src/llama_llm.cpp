@@ -1,20 +1,3 @@
-/*
- * 叶汐AI角色专用推理框架 - 通用开源版
- * Copyright (C) 2026  夏瑞朋
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
 #include "../include/llama_llm.h"
 #include <iostream>
 #include <ostream>
@@ -49,7 +32,7 @@ std::vector<llama_token> llama_llm::participle(const char* prompt) {
 
 /* -- -- -- -- Public Function -- -- -- -- */
 /* ** 初始化 ** */
-bool llama_llm::init(const SpscQueue& spsc_queue_) {
+bool llama_llm::init() {
     // 模型权重卸载层数
     model_params.n_gpu_layers = -1;
     // 加载 GGUF 模型
@@ -71,7 +54,6 @@ bool llama_llm::init(const SpscQueue& spsc_queue_) {
     llama_sampler_chain_add(sampler, llama_sampler_init_top_p(1.0f, 1));
     llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
     llama_sampler_chain_add(sampler, llama_sampler_init_dist(std::random_device{}()));
-    this -> spsc_queue = spsc_queue_;
     return true;
 }
 
@@ -105,14 +87,12 @@ void llama_llm::flowChat(const std::string& prompt) {
         const llama_token new_token_id = llama_sampler_sample(sampler, context, -1);
         // EOG Token 结束
         if (llama_vocab_is_eog(vocab, new_token_id)) break;
-
         reg.n_tokens = 1;
         reg.token[0] = new_token_id;
         reg.pos[0] = kv_pos;
         reg.seq_id[0][0] = 0;
         reg.n_seq_id[0] = 1;
         reg.logits[0] = true;
-
         // 解码
         if (llama_decode(context, reg) != 0) { std::cerr << "[ ERROR ] >> FlowChat : 生成解码失败\n"; llama_batch_free(reg); return; }
         kv_pos ++;
@@ -122,11 +102,11 @@ void llama_llm::flowChat(const std::string& prompt) {
         std::vector<char> piece_buf(4096);
         if (const int n_chars = llama_token_to_piece(vocab, new_token_id, piece_buf.data(), static_cast<int32_t>(piece_buf.size()), 0, false); n_chars > 0) {
             content.append(piece_buf.data(), n_chars);
-            spsc_queue.enter(std::string(piece_buf.data(), n_chars));
+            msgCache.enter(std::string(piece_buf.data(), n_chars));
         }
     }
+    msgCache.uStatus(false);
     llama_batch_free(reg);
-    spsc_queue.uStatus(false);
 }
 /* ** 资源清理 ** */
 void llama_llm::cleanUp() {

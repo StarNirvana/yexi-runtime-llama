@@ -1,20 +1,3 @@
-/*
-* 叶汐AI角色专用推理框架 - 通用开源版
- * Copyright (C) 2026  夏瑞朋
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
 #include <future>
 #include <iostream>
 #include <windows.h>
@@ -23,8 +6,8 @@ int main() {
     SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
     llama_llm llm;
-    SpscQueue spsc_queue;
-    if (! llm.init(spsc_queue)) { llm.cleanUp(); return -1; };
+    MsgCache msgCache;
+    if (! llm.init()) { llm.cleanUp(); return -1; };
     std::string input;
     while (true) {
         std::getline(std::cin, input);
@@ -33,10 +16,11 @@ int main() {
         std::thread t(&llama_llm::flowChat, &llm, input);
         t.detach();
         std::string value;
-        while (spsc_queue.check()) {
-            std::cout << spsc_queue.take();
+        while (msgCache.check()) {
+            if ((value = msgCache.take()) == "<|channel>" || value == "thought" || value == "<channel|>") continue;
+            std::cout << value;
         }
-        spsc_queue.uStatus(true);
+        msgCache.uStatus(true);
         std::cout << std::endl;
     }
     llm.cleanUp();
